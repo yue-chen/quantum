@@ -14,7 +14,7 @@ set -e
 PIDFILE=/var/run/quantum/quantum-server.pid
 LOGFILE=/var/log/quantum/quantum-server.log
 
-DAEMON=/usr/bin/quantum-server
+DAEMON=/usr/sbin/quantum-server
 DAEMON_ARGS="--log-file=$LOGFILE"
 DAEMON_DIR=/var/run
 
