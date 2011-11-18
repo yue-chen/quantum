@@ -56,3 +56,21 @@ def remove_vlan_binding(netid):
     except exc.NoResultFound:
             pass
     session.flush()
+
+
+def add_ofp_servers(hosts):
+    session = db.get_session()
+    session.query(ovs_models.OFPServers).delete()
+    for (host_address, host_type) in hosts:
+        host = ovs_models.OFPServers(host_address, host_type)
+        session.add(host)
+    session.flush()
+
+
+def ofp_has_servers():
+    session = db.get_session()
+    try:
+        session.query(ovs_models.OFPServers).first()
+        return True
+    except exc.NoResultFound:
+        return False

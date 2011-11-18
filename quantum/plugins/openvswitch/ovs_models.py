@@ -40,3 +40,20 @@ class VlanBinding(BASE):
     def __repr__(self):
         return "<VlanBinding(%s,%s)>" % \
           (self.vlan_id, self.network_id)
+
+
+class OFPServers(BASE):
+    """Openflow Server/API address"""
+    __tablename__ = 'ofp_servers'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    address = Column(String(255))       # netloc <host ip address>:<port>
+    host_type = Column(String(255))     # server type
+                                        # Controller, REST_API
+
+    def __init__(self, address, host_type):
+        self.address = address
+        self.host_type = host_type
+
+    def __repr__(self):
+        return "<OFPSErvers(%s,%s,%s)>" % (self.address, self.host_type)

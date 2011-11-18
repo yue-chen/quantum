@@ -25,10 +25,12 @@ import sys
 
 from quantum.api.api_common import OperationalStatus
 from quantum.common import exceptions as q_exc
+from quantum.common import utils
 from quantum.common.config import find_config_file
 from quantum.quantum_plugin_base import QuantumPluginBase
 
 import quantum.db.api as db
+import ofp_service_type
 import ovs_db
 import plugin_driver_base
 
@@ -43,25 +45,39 @@ LOG.getLogger("ovs_quantum_plugin")
 class VlanMap(plugin_driver_base.PluginDriverBase):
     vlans = {}
 
-    def __init__(self):
+    def __init__(self, _config):
         for x in xrange(2, 4094):
             self.vlans[x] = None
+
+        # Populate the map with anything that is already present in the
+        # database
+        vlans = ovs_db.get_vlans()
+        for x in vlans:
+            vlan_id, network_id = x
+            # LOG.debug("Adding already populated vlan %s -> %s"
+            #                                   % (vlan_id, network_id))
+            self.set(vlan_id, network_id)
 
     def set(self, vlan_id, network_id):
         self.vlans[vlan_id] = network_id
 
-    def acquire(self, network_id):
+    def create_network(self, net):
+        network_id = str(net.uuid)
         for x in xrange(2, 4094):
             if self.vlans[x] is None:
                 self.vlans[x] = network_id
-                # LOG.debug("VlanMap::acquire %s -> %s" % (x, network_id))
-                return x
-        raise Exception("No free vlans..")
+                break
+        else:
+            raise Exception("No free vlans..")
+
+        # LOG.debug("VlanMap::acquire %s -> %s" % (x, network_id))
+        ovs_db.add_vlan_binding(x, network_id)
 
     def get(self, vlan_id):
         return self.vlans[vlan_id]
 
-    def release(self, network_id):
+    def delete_network(self, net):
+        network_id = net.uuid
         for x in self.vlans.keys():
             if self.vlans[x] == network_id:
                 self.vlans[x] = None
@@ -71,9 +87,15 @@ class VlanMap(plugin_driver_base.PluginDriverBase):
 
 
 class OVSQuantumPlugin(QuantumPluginBase):
+    CONFIG_DEFAULT = {
+        "plugin_driver":
+                "quantum.plugins.openvswitch.ovs_quantum_plugin.VlanMap",
+        "openflow-controller": None,
+        "openflow-rest-api": None,
+        }
 
     def __init__(self, configfile=None):
-        config = ConfigParser.ConfigParser()
+        config = ConfigParser.ConfigParser(self.CONFIG_DEFAULT)
         if configfile is None:
             if os.path.exists(CONF_FILE):
                 configfile = CONF_FILE
@@ -90,15 +112,10 @@ class OVSQuantumPlugin(QuantumPluginBase):
         options = {"sql_connection": config.get("DATABASE", "sql_connection")}
         db.configure_db(options)
 
-        self.vmap = VlanMap()
-        # Populate the map with anything that is already present in the
-        # database
-        vlans = ovs_db.get_vlans()
-        for x in vlans:
-            vlan_id, network_id = x
-            # LOG.debug("Adding already populated vlan %s -> %s"
-            #                                   % (vlan_id, network_id))
-            self.vmap.set(vlan_id, network_id)
+        driver_name = config.get("OVS", "plugin_driver")
+        LOG.debug("plugin driver: %s", driver_name)
+        cls = utils.import_class(driver_name)
+        self.driver = cls(config)
 
     def get_all_networks(self, tenant_id):
         nets = []
@@ -120,8 +137,7 @@ class OVSQuantumPlugin(QuantumPluginBase):
         net = db.network_create(tenant_id, net_name,
                           op_status=OperationalStatus.UP)
         LOG.debug("Created network: %s" % net)
-        vlan_id = self.vmap.acquire(str(net.uuid))
-        ovs_db.add_vlan_binding(vlan_id, str(net.uuid))
+        self.driver.create_network(net)
         return self._make_net_dict(str(net.uuid), net.name, [],
                                         net.op_status)
 
@@ -134,7 +150,7 @@ class OVSQuantumPlugin(QuantumPluginBase):
                 raise q_exc.NetworkInUse(net_id=net_id)
         net = db.network_destroy(net_id)
         ovs_db.remove_vlan_binding(net_id)
-        self.vmap.release(net_id)
+        self.driver.delete_network(net)
         return self._make_net_dict(str(net.uuid), net.name, [],
                                         net.op_status)
 
