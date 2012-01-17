@@ -6,24 +6,22 @@ except ImportError:
     from setuptools import setup, find_packages
 
 from quantum import version
-
 import sys
 
-Name = 'quantum-openvswitch-plugin'
+Name = 'quantum-plugin-ovscommon'
 ProjecUrl = ""
 Version = version.version_string()
 License = 'Apache License 2.0'
 Author = 'Open vSwitch Team'
 AuthorEmail = 'discuss@openvswitch.org'
 Maintainer = ''
-Summary = 'OpenVSwitch plugin for Quantum'
+Summary = 'OVS common library for Quantum plugin'
 ShortDescription = Summary
 Description = Summary
 
 requires = [
     'quantum-common',
     'quantum-server',
-    'quantum-plugin-ovscommon',
 ]
 
 EagerResources = [
@@ -36,16 +34,7 @@ ProjectScripts = [
 PackageData = {
 }
 
-# If we're installing server-wide, use an aboslute path for config
-# if not, use a relative path
-config_path = '/etc/quantum/plugins/openvswitch'
-relative_locations = ['--user', '--virtualenv', '--venv']
-if [x for x in relative_locations if x in sys.argv]:
-    config_path = 'etc/quantum/plugins/openvswitch'
-
 DataFiles = [
-    (config_path,
-    ['etc/quantum/plugins/openvswitch/ovs_quantum_plugin.ini'])
 ]
 
 setup(
@@ -59,8 +48,7 @@ setup(
     scripts=ProjectScripts,
     install_requires=requires,
     include_package_data=True,
-    packages=["quantum.plugins.openvswitch"],
+    packages=["quantum.plugins.ovscommon"],
     package_data=PackageData,
-    data_files=DataFiles,
     eager_resources=EagerResources,
 )

@@ -21,7 +21,6 @@
 from sqlalchemy.orm import exc
 
 import quantum.db.api as db
-import quantum.db.models as models
 import ovs_models
 
 
