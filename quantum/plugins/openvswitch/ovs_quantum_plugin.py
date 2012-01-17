@@ -30,6 +30,7 @@ from quantum.quantum_plugin_base import QuantumPluginBase
 
 import quantum.db.api as db
 import ovs_db
+import plugin_driver_base
 
 CONF_FILE = find_config_file(
   {"config_file": "etc/quantum/plugins/openvswitch/ovs_quantum_plugin.ini"},
@@ -39,7 +40,7 @@ LOG.basicConfig(level=LOG.WARN)
 LOG.getLogger("ovs_quantum_plugin")
 
 
-class VlanMap(object):
+class VlanMap(plugin_driver_base.PluginDriverBase):
     vlans = {}
 
     def __init__(self):
