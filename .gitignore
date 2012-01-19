@@ -1,7 +1,10 @@
+*.egg-info/
 *.pyc
 *.DS_Store
+RELEASE-VERSION
 build/*
 build-stamp
+dist/
 run_tests.err.log
 run_tests.log
 tests/
