@@ -71,6 +71,7 @@ init_path = 'etc/init.d'
 ovs_plugin_config_path = 'etc/quantum/plugins/openvswitch'
 cisco_plugin_config_path = 'etc/quantum/plugins/cisco'
 linuxbridge_plugin_config_path = 'etc/quantum/plugins/linuxbridge'
+ryu_plugin_config_path = 'etc/quantum/plugins/ryu'
 
 DataFiles = [
     (config_path,
@@ -87,6 +88,7 @@ DataFiles = [
          'etc/quantum/plugins/cisco/db_conn.ini']),
     (linuxbridge_plugin_config_path,
         ['etc/quantum/plugins/linuxbridge/linuxbridge_conf.ini']),
+    (ryu_plugin_config_path, ['etc/quantum/plugins/ryu/ryu.ini']),
 ]
 
 setup(

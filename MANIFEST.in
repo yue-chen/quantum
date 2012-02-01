@@ -4,3 +4,4 @@ include etc/init.d/*
 include etc/quantum/plugins/openvswitch/*
 include etc/quantum/plugins/cisco/*
 include etc/quantum/plugins/linuxbridge/*
+include etc/quantum/plugins/ryu/*
