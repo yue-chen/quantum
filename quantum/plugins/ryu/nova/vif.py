@@ -19,6 +19,7 @@ import httplib
 
 from nova import flags
 from nova import log as logging
+from nova.openstack.common import cfg
 from nova.virt.libvirt import vif as libvirt_vif
 from ryu.app.client import OFPClient
 
@@ -26,9 +27,14 @@ from . import ovs_utils
 
 
 LOG = logging.getLogger('quantum.plugins.openvswitch.ryu.nova.vif')
+
+ryu_libvirt_ovs_driver_opt = \
+    cfg.StrOpt('libvirt_ovs_ryu_api_host',
+               default='127.0.0.1:8080',
+               help='Openflow Ryu REST API host:port')
+
 FLAGS = flags.FLAGS
-flags.DEFINE_string('libvirt_ovs_ryu_api_host', '127.0.0.1:8080',
-                    'Openflow Ryu REST API host:port')
+FLAGS.add_option(ryu_libvirt_ovs_driver_opt)
 
 
 class LibvirtOpenVswitchOFPRyuDriver(libvirt_vif.LibvirtOpenVswitchDriver):
@@ -47,14 +53,14 @@ class LibvirtOpenVswitchOFPRyuDriver(libvirt_vif.LibvirtOpenVswitchDriver):
         result = super(LibvirtOpenVswitchOFPRyuDriver, self).plug(
             instance, network, mapping)
         port_no = self._get_port_no(mapping)
-        self.ryu_client.create_port(mapping['net_uuid'],
+        self.ryu_client.create_port(network['id'],
                                     self.datapath_id, port_no)
         return result
 
     def unplug(self, instance, network, mapping):
         port_no = self._get_port_no(mapping)
         try:
-            self.ryu_client.delete_port(mapping['net_uuid'],
+            self.ryu_client.delete_port(network['id'],
                                         self.datapath_id, port_no)
         except httplib.HTTPException as e:
             res = e.args[0]

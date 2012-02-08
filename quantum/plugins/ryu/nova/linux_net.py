@@ -19,15 +19,20 @@
 from nova import flags
 from nova import log as logging
 from nova import utils
+from nova.openstack.common import cfg
 from ryu.app.client import OFPClient
 
 from . import ovs_utils
 
 LOG = logging.getLogger('quantum.plugins.openvswitch.ryu.nova.linux_net')
-FLAGS = flags.FLAGS
-flags.DEFINE_string('linuxnet_ovs_ryu_api_host', '127.0.0.1:8080',
-                    'Openflow Ryu REST API host:port')
 
+ryu_linux_net_opt = \
+    cfg.StrOpt('linuxnet_ovs_ryu_api_host',
+               default='127.0.0.1:8080',
+               help='Openflow Ryu REST API host:port')
+
+FLAGS = flags.FLAGS
+FLAGS.add_option(ryu_linux_net_opt)
 
 #
 # from nova.network import linux_net as nova_linux_net
@@ -41,6 +46,7 @@ flags.DEFINE_string('linuxnet_ovs_ryu_api_host', '127.0.0.1:8080',
 # Or factor out nova.network.linux_net somehow.
 # load lazily FLAGS.linuxnet_interface_driver?
 #
+
 
 class LinuxOVSRyuInterfaceDriver(object):
     nova_linux_net = None
