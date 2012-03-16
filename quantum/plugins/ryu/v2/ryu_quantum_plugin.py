@@ -16,19 +16,21 @@
 #    under the License.
 # @author: Isaku Yamahata
 
+from sqlalchemy.orm import exc as sql_exc
+
 import quantum.db.api as db
 from quantum.common import exceptions as q_exc
 from quantum.common.config import find_config_file
 from quantum.plugins.ryu import ofp_service_type
 from quantum.plugins.ryu import ovs_quantum_plugin_base
-from quantum.plugins.ryu.db import api as db_api
-
+from quantum.plugins.ryu.v2.db import api as ryu_db
 
 from ryu.app import client
 from ryu.app import rest_nw_id
+from ryu.app.client import ignore_http_not_found
 
 
-CONF_FILE = find_config_file({"plugin": "ryu"}, None, "ryu.ini")
+CONF_FILE = find_config_file({"plugin": "ryu"}, None, "ryu_v2.ini")
 
 
 class OFPRyuDriver(ovs_quantum_plugin_base.OVSQuantumPluginDriverBase):
@@ -42,24 +44,37 @@ class OFPRyuDriver(ovs_quantum_plugin_base.OVSQuantumPluginDriverBase):
 
         hosts = [(ofp_con_host, ofp_service_type.CONTROLLER),
                  (ofp_api_host, ofp_service_type.REST_API)]
-        db_api.set_ofp_servers(hosts)
+        ryu_db.set_ofp_servers(hosts)
 
         self.client = client.OFPClient(ofp_api_host)
+        self.gt_client = client.GRETunnelClient(ofp_api_host)
         self.client.update_network(rest_nw_id.NW_ID_EXTERNAL)
+        self.client.update_network(rest_nw_id.NW_ID_VPORT_GRE)
 
         # register known all network list on startup
         self._create_all_tenant_network()
 
     def _create_all_tenant_network(self):
-        networks = db.network_all_tenant_list()
-        for net in networks:
+        for net in db.network_all_tenant_list():
             self.client.update_network(net.uuid)
+        for tun in ryu_db.tunnel_key_all_list():
+            self.gt_client.update_tunnel_key(tun.network_id,
+                                             tun.tunnel_key)
 
     def create_network(self, net):
+        tunnel_key = ryu_db.tunnel_key_allocate(net.uuid)
         self.client.create_network(net.uuid)
+        self.gt_client.create_tunnel_key(net.uuid, tunnel_key)
 
     def delete_network(self, net):
-        self.client.delete_network(net.uuid)
+        ignore_http_not_found(lambda: self.client.delete_network(net.uuid))
+        ignore_http_not_found(lambda:
+                              self.gt_client.delete_tunnel_key(net.uuid))
+
+        try:
+            ryu_db.tunnel_key_delete(net.uuid)
+        except sql_exc.NoResultFound:
+            raise q_exc.NetworkNotFound(net_id=net.uuid)
 
 
 class RyuQuantumPlugin(ovs_quantum_plugin_base.OVSQuantumPluginBase):
