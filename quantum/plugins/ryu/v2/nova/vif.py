@@ -64,6 +64,8 @@ class LibvirtOpenVswitchOFPRyuDriver(libvirt_vif.LibvirtOpenVswitchDriver):
         port_no = self._get_port_no(mapping)
         self.ryu_client.create_port(network['id'],
                                     self.datapath_id, port_no)
+        self.ryu_client.create_mac(network['id'],
+                                   self.datapath_id, port_no, mapping['mac'])
         return result
 
     def unplug(self, instance, network, mapping):
