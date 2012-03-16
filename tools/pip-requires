@@ -1,6 +1,7 @@
 Paste
 PasteDeploy==1.5.0
 Routes>=1.12.3
+configobj
 eventlet>=0.9.12
 lxml
 mox==0.5.3
