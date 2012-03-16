@@ -18,9 +18,11 @@ from sqlalchemy import Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 
 from quantum.db.models import BASE
+from quantum.db.models import QuantumBase
+from quantum.db import models
 
 
-class OFPServer(BASE):
+class OFPServer(BASE, QuantumBase):
     """Openflow Server/API address"""
     __tablename__ = 'ofp_server'
 
@@ -30,9 +32,57 @@ class OFPServer(BASE):
                                         # Controller, REST_API
 
     def __init__(self, address, host_type):
+        super(OFPServer, self).__init__()
         self.address = address
         self.host_type = host_type
 
     def __repr__(self):
         return "<OFPServer(%s,%s,%s)>" % (self.id, self.address,
                                           self.host_type)
+
+
+class OVSNode(BASE, QuantumBase):
+    """IP Addresses used for tunneling"""
+    __tablename__ = 'ovs_node'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dpid = Column(String(255))          # datapath id
+    address = Column(String(255))       # ip address used for tunneling
+
+    def __init__(self, dpid, address):
+        super(OVSNode, self).__init__()
+        self.dpid = dpid
+        self.address = address
+
+    def __repr__(self):
+        return "<OVSNode(%s,%s,%s)>" % (self.id, self.dpid, self.address)
+
+
+class TunnelKeyLast(BASE, QuantumBase):
+    __tablename__ = 'tunnel_key_last'
+
+    last_key = Column(Integer, primary_key=True)
+
+    def __init__(self, last_key):
+        super(TunnelKeyLast, self).__init__()
+        self.last_key = last_key
+
+    def __repr__(self):
+        return "<TunnelKeyLast(%x)>" % self.last_key
+
+
+class TunnelKey(BASE, QuantumBase):
+    """Netowrk ID <-> GRE tunnel key mapping"""
+    __tablename__ = 'tunnel_key'
+
+    # Network.uuid
+    network_id = Column(String(255), primary_key=True, nullable=False)
+    tunnel_key = Column(Integer, unique=True, nullable=False)
+
+    def __init__(self, network_id, tunnel_key):
+        super(TunnelKey, self).__init__()
+        self.network_id = network_id
+        self.tunnel_key = tunnel_key
+
+    def __repr__(self):
+        return "<TunnelKey(%s,%x)>" % (self.network_id, self.tunnel_key)
