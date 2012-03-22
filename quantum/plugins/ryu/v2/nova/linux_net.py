@@ -20,6 +20,7 @@ from nova import log as logging
 from nova import utils
 from nova.network import linux_net
 from nova.openstack.common import cfg
+from ryu.app.client import ignore_http_not_found
 from ryu.app.client import OFPClient
 
 LOG = logging.getLogger(__name__)
@@ -68,4 +69,13 @@ class LinuxOVSRyuInterfaceDriver(linux_net.LinuxOVSInterfaceDriver):
 
         port_no = _get_port_no(self.get_dev(network))
         self.ryu_client.create_port(network['uuid'], self.datapath_id, port_no)
+        self.ryu_client.create_mac(network['uuid'], self.datapath_id, port_no,
+                                   mac_address)
         return ret
+
+    def unplug(self, network):
+        port_no = _get_port_no(self.get_dev(network))
+        ignore_http_not_found(
+            lambda: self.ryu_client.delete_port(network['uuid'],
+                                                self.datapath_id, port_no))
+        return super(LinuxOVSRyuInterfaceDriver, self).unplug(network)

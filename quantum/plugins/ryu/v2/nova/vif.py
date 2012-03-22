@@ -15,13 +15,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import httplib
-
 from nova import flags
 from nova import log as logging
 from nova import utils
 from nova.openstack.common import cfg
 from nova.virt.libvirt import vif as libvirt_vif
+from ryu.app.client import ignore_http_not_found
 from ryu.app.client import OFPClient
 
 
@@ -65,16 +64,14 @@ class LibvirtOpenVswitchOFPRyuDriver(libvirt_vif.LibvirtOpenVswitchDriver):
         port_no = self._get_port_no(mapping)
         self.ryu_client.create_port(network['id'],
                                     self.datapath_id, port_no)
+        self.ryu_client.create_mac(network['id'],
+                                   self.datapath_id, port_no, mapping['mac'])
         return result
 
     def unplug(self, instance, network, mapping):
         port_no = self._get_port_no(mapping)
-        try:
-            self.ryu_client.delete_port(network['id'],
-                                        self.datapath_id, port_no)
-        except httplib.HTTPException as e:
-            res = e.args[0]
-            if res.status != httplib.NOT_FOUND:
-                raise
+        ignore_http_not_found(
+            lambda: self.ryu_client.delete_port(network['id'],
+                                                self.datapath_id, port_no))
         super(LibvirtOpenVswitchOFPRyuDriver, self).unplug(instance, network,
                                                            mapping)
