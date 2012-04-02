@@ -15,24 +15,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import httplib
-
 from nova import flags
 from nova import log as logging
 from nova import utils
-from nova.openstack.common import cfg
+from nova.network.quantum import quantum_connection
 from nova.virt.libvirt import vif as libvirt_vif
-from ryu.app.client import OFPClient
 
-
-LOG = logging.getLogger(__name__)
-
-ryu_libvirt_ovs_driver_opt = cfg.StrOpt('libvirt_ovs_ryu_api_host',
-                                        default='127.0.0.1:8080',
-                                        help='Openflow Ryu REST API host:port')
 
 FLAGS = flags.FLAGS
-FLAGS.register_opt(ryu_libvirt_ovs_driver_opt)
+LOG = logging.getLogger(__name__)
 
 
 def _get_datapath_id(bridge_name):
@@ -51,30 +42,33 @@ class LibvirtOpenVswitchOFPRyuDriver(libvirt_vif.LibvirtOpenVswitchDriver):
     def __init__(self, **kwargs):
         super(LibvirtOpenVswitchOFPRyuDriver, self).__init__()
         LOG.debug('ryu rest host %s', FLAGS.libvirt_ovs_bridge)
-        self.ryu_client = OFPClient(FLAGS.libvirt_ovs_ryu_api_host)
         self.datapath_id = _get_datapath_id(FLAGS.libvirt_ovs_bridge)
+        self.q_conn = quantum_connection.QuantumClientConnection()
 
     def _get_port_no(self, mapping):
         iface_id = mapping['vif_uuid']
         dev = self.get_dev_name(iface_id)
         return _get_port_no(dev)
 
+    def _set_port_state(self, network, mapping, body):
+        tenant_id = mapping['tenant_id']
+        net_id = network['id']
+        port_id = self.q_conn.get_port_by_attachment(tenant_id, net_id,
+                                                     mapping['vif_uuid'])
+        self.q_conn.client.set_port_state(net_id, port_id, body,
+                                          tenant=tenant_id)
+
     def plug(self, instance, network, mapping):
         result = super(LibvirtOpenVswitchOFPRyuDriver, self).plug(
             instance, network, mapping)
-        port_no = self._get_port_no(mapping)
-        self.ryu_client.create_port(network['id'],
-                                    self.datapath_id, port_no)
-        return result
 
-    def unplug(self, instance, network, mapping):
-        port_no = self._get_port_no(mapping)
-        try:
-            self.ryu_client.delete_port(network['id'],
-                                        self.datapath_id, port_no)
-        except httplib.HTTPException as e:
-            res = e.args[0]
-            if res.status != httplib.NOT_FOUND:
-                raise
-        super(LibvirtOpenVswitchOFPRyuDriver, self).unplug(instance, network,
-                                                           mapping)
+        port_data = {
+            'state': 'ACTIVE',
+            'datapath_id': self.datapath_id,
+            'port_no': self._get_port_no(mapping),
+            'mac_address': mapping['mac'],
+            }
+        body = {'port': port_data}
+        self._set_port_state(network, mapping, body)
+
+        return result

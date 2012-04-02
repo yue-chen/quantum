@@ -19,17 +19,11 @@ from nova import flags
 from nova import log as logging
 from nova import utils
 from nova.network import linux_net
-from nova.openstack.common import cfg
-from ryu.app.client import OFPClient
+from nova.network.quantum import quantum_connection
 
-LOG = logging.getLogger(__name__)
-
-ryu_linux_net_opt = cfg.StrOpt('linuxnet_ovs_ryu_api_host',
-                               default='127.0.0.1:8080',
-                               help='Openflow Ryu REST API host:port')
 
 FLAGS = flags.FLAGS
-FLAGS.register_opt(ryu_linux_net_opt)
+LOG = logging.getLogger(__name__)
 
 
 def _get_datapath_id(bridge_name):
@@ -47,9 +41,8 @@ def _get_port_no(dev):
 class LinuxOVSRyuInterfaceDriver(linux_net.LinuxOVSInterfaceDriver):
     def __init__(self):
         super(LinuxOVSRyuInterfaceDriver, self).__init__()
+        self.q_conn = quantum_connection.QuantumClientConnection()
 
-        LOG.debug('ryu rest host %s', FLAGS.linuxnet_ovs_ryu_api_host)
-        self.ryu_client = OFPClient(FLAGS.linuxnet_ovs_ryu_api_host)
         self.datapath_id = _get_datapath_id(
             FLAGS.linuxnet_ovs_integration_bridge)
 
@@ -60,12 +53,27 @@ class LinuxOVSRyuInterfaceDriver(linux_net.LinuxOVSInterfaceDriver):
                         '--in-interface gw-+ --out-interface gw-+ -j DROP')
             linux_net.iptables_manager.apply()
 
+    def _set_port_state(self, network, dev, body):
+        tenant_id = network['tenant_id']
+        net_id = network['uuid']
+        port_id = self.q_conn.get_port_by_attachment(tenant_id, net_id, dev)
+        self.q_conn.client.set_port_state(net_id, port_id,
+                                          body, tenant=tenant_id)
+
     def plug(self, network, mac_address, gateway=True):
         LOG.debug("network %s mac_adress %s gateway %s",
                   network, mac_address, gateway)
         ret = super(LinuxOVSRyuInterfaceDriver, self).plug(
-            network, mac_address, gateway)
+            network, mac_address, True)
 
-        port_no = _get_port_no(self.get_dev(network))
-        self.ryu_client.create_port(network['uuid'], self.datapath_id, port_no)
+        dev = self.get_dev(network)
+        port_data = {
+            'state': 'ACTIVE',
+            'datapath_id': self.datapath_id,
+            'port_no': _get_port_no(dev),
+            'mac_address': mac_address,
+            }
+        body = {'port': port_data}
+        self._set_port_state(network, dev, body)
+
         return ret
