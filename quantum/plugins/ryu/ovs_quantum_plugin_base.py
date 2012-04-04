@@ -44,6 +44,12 @@ class OVSQuantumPluginDriverBase(object):
     def delete_network(self, net):
         pass
 
+    def update_port(self, port, **kwargs):
+        pass
+
+    def delete_port(self, port):
+        pass
+
 
 class OVSQuantumPluginBase(QuantumPluginBase):
     """
@@ -149,6 +155,8 @@ class OVSQuantumPluginBase(QuantumPluginBase):
 
     def delete_port(self, tenant_id, net_id, port_id):
         db.validate_port_ownership(tenant_id, net_id, port_id)
+        port = db.port_get(port_id, net_id)
+        self.driver.delete_port(port)
         port = db.port_destroy(port_id, net_id)
         return self._make_port_dict(port)
 
@@ -159,6 +167,7 @@ class OVSQuantumPluginBase(QuantumPluginBase):
         LOG.debug("update_port() called\n")
         db.validate_port_ownership(tenant_id, net_id, port_id)
         port = db.port_get(port_id, net_id)
+        self.driver.update_port(port, **kwargs)
         db.port_update(port_id, net_id, **kwargs)
         return self._make_port_dict(port)
 
