@@ -54,7 +54,7 @@ class LinuxOVSRyuInterfaceDriver(linux_net.LinuxOVSInterfaceDriver):
             linux_net.iptables_manager.apply()
 
     def _set_port_state(self, network, dev, body):
-        tenant_id = network['tenant_id']
+        tenant_id = network['net_tenant_id']
         net_id = network['uuid']
         port_id = self.q_conn.get_port_by_attachment(tenant_id, net_id, dev)
         self.q_conn.client.set_port_state(net_id, port_id,
