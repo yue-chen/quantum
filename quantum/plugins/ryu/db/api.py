@@ -117,7 +117,7 @@ def _tunnel_key_last(session):
         if max_key > _TUNNEL_KEY_MAX:
             max_key = _TUNNEL_KEY_MIN
 
-        session.query(models.TunnelKeyLast).all().delete()
+        session.query(models.TunnelKeyLast).delete()
         last_key = models.TunnelKeyLast(max_key)
     except exc.NoResultFound:
         last_key = models.TunnelKeyLast(_TUNNEL_KEY_MIN)
@@ -200,7 +200,7 @@ def _sequence_init(session, table):
         return session.query(table).one()
     except exc.MultipleResultsFound:
         max_sequence = session.query(func.max(table.sequence))
-        session.query(table).all().delete()
+        session.query(table).delete()
         sequence = table(max_sequence)
     except exc.NoResultFound:
         sequence = table(_SEQUENCE_MIN)
