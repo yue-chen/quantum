@@ -321,6 +321,7 @@ class GREPortSet(object):
     def setup(self):
         _ovs_node_update(self.db, self.int_br.datapath_id, self.tunnel_ip)
 
+        self.api.update_network(rest_nw_id.NW_ID_VPORT_GRE)
         for port in self.int_br.get_gre_ports():
             try:
                 node = self.db.ovs_node.filter(
@@ -385,6 +386,7 @@ class VifPortSet(object):
         self.api.update_port(network_id, port.switch.datapath_id, port.ofport)
         if port.vif_mac is not None:
             # external port doesn't have mac address
+            self.api.update_network(network_id)
             self.api.update_mac(network_id, port.switch.datapath_id,
                                 port.ofport, port.vif_mac)
         else:
