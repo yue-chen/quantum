@@ -359,15 +359,21 @@ class GREPortSet(object):
         gre_ports = dict((port.remote_ip, port)
                          for port in self.int_br.get_gre_ports())
 
-        for node in self.db.ovs_node.all():
+        request_gre_ports = self.db.execute(
+            'SELECT * FROM ovs_node WHERE '
+            'EXISTS (SELECT 1 FROM tunnel_port_request '
+            '        WHERE ovs_node.dpid = tunnel_port_request.dst_dpid AND '
+            '              tunnel_port_request.src_dpid = :src_dpid)',
+            params={'src_dpid': self.int_br.datapath_id})
+        for node in request_gre_ports.fetchall():
             port = gre_ports.pop(node.address, None)
             if port:
                 continue
-            if node.address == self.tunnel_ip:
-                continue
+            LOG.info('adding tunnel port %s', node)
             self._add_port(node)
 
         for port in gre_ports.values():
+            LOG.info('removing tunnel port %s', port)
             self._del_port(port.port_name, port.ofport)
 
 
