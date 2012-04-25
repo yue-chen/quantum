@@ -27,8 +27,8 @@ class OFPServer(BASE, QuantumBase):
     __tablename__ = 'ofp_server'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    address = Column(String(255), primary_key=True)  # netloc
-                                                     # <host ip address>:<port>
+    address = Column(String(255))       # netloc
+                                        # <host ip address>:<port>
     host_type = Column(String(255))     # server type
                                         # Controller, REST_API
 
