@@ -15,6 +15,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import httplib
+
+
+def ignore_http_not_found(func):
+    """
+    Ignore http not found(404) with Ryu client library.
+    Ryu client raises httplib.HTTPException with an error in args[0]
+    """
+    try:
+        func()
+    except httplib.HTTPException as e:
+        res = e.args[0]
+        if res.status != httplib.NOT_FOUND:
+            raise
+
 
 class OFPClient(object):
     def __init__(self, address):
