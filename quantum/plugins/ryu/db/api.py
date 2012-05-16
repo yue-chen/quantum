@@ -106,15 +106,16 @@ def port_binding_all_list():
 
 
 _TUNNEL_KEY_MIN = 0
-_TUNNEL_KEY_MAX = 0xffffffff
+# the maximum value of tunnel key is configurable
+# because it depends on tunnel technology(VLAN, VXLAN, NVGRE, STT...)
 
 
-def _tunnel_key_last(session):
+def _tunnel_key_last(session, tunnel_key_max):
     try:
         return session.query(models.TunnelKeyLast).one()
     except exc.MultipleResultsFound:
         max_key = session.query(func.max(models.TunnelKeyLast.last_key))
-        if max_key > _TUNNEL_KEY_MAX:
+        if max_key > tunnel_key_max:
             max_key = _TUNNEL_KEY_MIN
 
         session.query(models.TunnelKeyLast).delete()
@@ -127,7 +128,7 @@ def _tunnel_key_last(session):
     return session.query(models.TunnelKeyLast).one()
 
 
-def _tunnel_key_allocate(session, last_key):
+def _tunnel_key_allocate(session, last_key, tunnel_key_max):
     """
     Try to find unused tunnel key in TunnelKey table starting
     from last_key + 1.
@@ -160,19 +161,21 @@ def _tunnel_key_allocate(session, last_key):
     new_key = new_key[0]  # the result is tuple.
 
     LOG.debug("last_key %s new_key %s", last_key, new_key)
-    if new_key > _TUNNEL_KEY_MAX:
+    if new_key > tunnel_key_max:
         LOG.debug("no key found")
         raise exc.NoResultFound
     return new_key
 
 
-def tunnel_key_allocate(network_id):
+def tunnel_key_allocate(network_id, tunnel_key_max):
     session = db.get_session()
-    last_key = _tunnel_key_last(session)
+    last_key = _tunnel_key_last(session, tunnel_key_max)
     try:
-        new_key = _tunnel_key_allocate(session, last_key.last_key)
+        new_key = _tunnel_key_allocate(session,
+                                       last_key.last_key, tunnel_key_max)
     except exc.NoResultFound:
-        new_key = _tunnel_key_allocate(session, _TUNNEL_KEY_MIN)
+        new_key = _tunnel_key_allocate(session,
+                                       _TUNNEL_KEY_MIN, tunnel_key_max)
 
     tunnel_key = models.TunnelKey(network_id, new_key)
     last_key.last_key = new_key

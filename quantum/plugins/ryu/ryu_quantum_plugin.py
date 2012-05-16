@@ -36,10 +36,16 @@ CONF_FILE = find_config_file({"plugin": "ryu"}, None, "ryu.ini")
 
 
 class OFPRyuDriver(ovs_quantum_plugin_base.OVSQuantumPluginDriverBase):
+    # VLAN:16 bit, VXLAN/NVGRE: 24 bit, STT: 64 bit
+    _TUNNEL_KEY_MAX_DEFAULT = 4095
+
     def __init__(self, config):
         super(OFPRyuDriver, self).__init__()
         ofp_con_host = config.get("OVS", "openflow-controller")
         ofp_api_host = config.get("OVS", "openflow-rest-api")
+        self.tunnel_key_max = self._TUNNEL_KEY_MAX_DEFAULT
+        if config.has_option("TUNNEL", "key_max"):
+            self.tunnel_key_max = int(config.get("TUNNEL", "key_max"), 0)
 
         if ofp_con_host is None or ofp_api_host is None:
             raise q_exc.Invalid("invalid configuration. check ryu.ini")
@@ -73,7 +79,7 @@ class OFPRyuDriver(ovs_quantum_plugin_base.OVSQuantumPluginDriverBase):
         ryu_db.tunnel_port_request_initialize()
 
     def create_network(self, net):
-        tunnel_key = ryu_db.tunnel_key_allocate(net.uuid)
+        tunnel_key = ryu_db.tunnel_key_allocate(net.uuid, self.tunnel_key_max)
         self.client.create_network(net.uuid)
         self.gt_client.create_tunnel_key(net.uuid, tunnel_key)
 
