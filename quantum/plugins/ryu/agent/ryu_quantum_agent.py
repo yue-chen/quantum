@@ -35,6 +35,7 @@ from sqlalchemy.orm import exc
 from subprocess import PIPE, Popen
 
 from ryu.app import client
+from ryu.app import conf_switch_key
 from ryu.app import rest_nw_id
 
 
@@ -59,16 +60,25 @@ def _get_my_ip():
     return addr
 
 
-def _get_ip(config):
-    if config.has_option("OVS", "tunnel_ip"):
-        return config.get("OVS", "tunnel_ip")
+def _get_ip_option(config, db_name, ip_name, interface_name):
+    if config.has_option(db_name, ip_name):
+        return config.get(db_name, ip_name)
 
-    if config.has_option("OVS", "physical_interface"):
-        iface = config.get("OVS", "physical_interface")
+    if config.has_option(db_name, interface_name):
+        iface = config.get(db_name, interface_name)
         iface = netifaces.ifaddresses(iface)[netifaces.AF_INET][0]
         return iface['addr']
 
     return _get_my_ip()
+
+
+def _get_ip(config):
+    return _get_ip_option(config, "OVS", "tunnel_ip", "physical_interface")
+
+
+def _get_ovsdb_ip(config):
+    return _get_ip_option(config,
+                          "OVSDB", "ovsdb_ip", "ovsdb_physical_interface")
 
 
 def _to_hex(ip_addr):
@@ -154,6 +164,9 @@ class OVSBridge(object):
     def run_vsctl(self, args):
         full_args = ["ovs-vsctl", "--timeout=2"] + args
         return self.run_cmd(full_args)
+
+    def set_manager(self, target):
+        self.run_vsctl(["set-manager", target])
 
     def set_controller(self, target):
         methods = ("ssl", "tcp", "unix", "pssl", "ptcp", "punix")
@@ -309,14 +322,13 @@ def _ovs_node_update(db, dpid, tunnel_ip):
 
 
 class GREPortSet(object):
-    def __init__(self, int_br,
-                 db, tunnel_ip, ryu_rest_client, gre_tunnel_client):
+    def __init__(self, int_br, db, tunnel_ip, ryu_rest_client, tunnel_client):
         super(GREPortSet, self).__init__()
         self.int_br = int_br
         self.db = db
         self.tunnel_ip = tunnel_ip
         self.api = ryu_rest_client
-        self.tunnel_api = gre_tunnel_client
+        self.tunnel_api = tunnel_client
 
     def setup(self):
         _ovs_node_update(self.db, self.int_br.datapath_id, self.tunnel_ip)
@@ -465,38 +477,82 @@ class VifPortSet(object):
 
 
 class OVSQuantumOFPRyuAgent(object):
-    def __init__(self, integ_br, db, tunnel_ip, root_helper):
+    GRE_TUNNEL = 'gre_tunnel'
+    SIMPLE_ISOLATION = 'simple_isolation'
+    SIMPLE_VLAN = 'simple_vlan'
+    _SUPPORTED_RYU_APPS = (
+        SIMPLE_ISOLATION,
+        SIMPLE_VLAN,
+        GRE_TUNNEL,
+        )
+
+    def __init__(self, db, root_helper, config):
         super(OVSQuantumOFPRyuAgent, self).__init__()
         self.db = db
+        self.ryu_app = config.get('OVS', 'ryu_app')
         self.int_br = None
-        self.gre_ports = None
-        self.vif_ports = None
+        self.polls = []
+
+        if self.ryu_app not in self._SUPPORTED_RYU_APPS:
+            raise RuntimeError('Unsupported ryu_app %s' % self.ryu_app)
 
         (ofp_controller_addr, ofp_rest_api_addr) = check_ofp_mode(self.db)
-        self._setup_integration_br(root_helper, integ_br, tunnel_ip,
-                                   ofp_controller_addr, ofp_rest_api_addr)
+        self._setup_integration_br(root_helper, ofp_controller_addr,
+                                   ofp_rest_api_addr, config)
 
-    def _setup_integration_br(self, root_helper, integ_br, tunnel_ip,
-                              ofp_controller_addr, ofp_rest_api_addr):
+    def _setup_ovsdb(self, ofp_rest_api_addr, config):
+        ovsdb_manager = config.get("OVSDB", "ovsdb_manager")
+        params = ovsdb_manager.split(':')
+        if len(params) < 2 or len(params) > 3:
+            raise RuntimeError('invalid ovsdb params %s' % ovsdb_manager)
+        method = params[0]
+        if method != 'ptcp':
+            raise RuntimeError('unsupported ovsdb_manager %s' % ovsdb_manager)
+
+        self.int_br.set_manager(ovsdb_manager)
+
+        method = 'tcp'  # counter method of 'ptcp'
+        port = params[1]
+        if len(params) == 2:
+            ip = _get_ovsdb_ip(config)
+        else:
+            ip = params[3]
+        sc_client = client.SwitchConfClient(ofp_rest_api_addr)
+        dpid = self.int_br.datapath_id
+
+        # format is tcp:<ip>:<port>, ptcp:<port>[:<ip>]
+        # be carefull the order of ip and port.
+        sc_client.set_key(dpid, conf_switch_key.OVSDB_ADDR,
+                          '%s:%s:%s' % (method, ip, port))
+
+    def _setup_integration_br(self, root_helper,
+                              ofp_controller_addr, ofp_rest_api_addr,
+                              config):
+        integ_br = config.get("OVS", "integration-bridge")
         self.int_br = OVSBridge(integ_br, root_helper)
         self.int_br.find_datapath_id()
+        if self.ryu_app in (self.SIMPLE_VLAN, self.GRE_TUNNEL):
+            self._setup_ovsdb(ofp_rest_api_addr, config)
 
         ryu_rest_client = client.OFPClient(ofp_rest_api_addr)
-        gt_client = client.GRETunnelClient(ofp_rest_api_addr)
+        if self.ryu_app == self.GRE_TUNNEL:
+            tunnel_client = client.TunnelClient(ofp_rest_api_addr)
+            tunnel_ip = _get_ip(config)
+            LOG.debug('tunnel_ip %s', tunnel_ip)
+            self.polls.append(GREPortSet(self.int_br, self.db, tunnel_ip,
+                                         ryu_rest_client, tunnel_client))
+        self.polls.append(VifPortSet(self.int_br, self.db, ryu_rest_client))
 
-        self.gre_ports = GREPortSet(self.int_br, self.db, tunnel_ip,
-                                    ryu_rest_client, gt_client)
-        self.vif_ports = VifPortSet(self.int_br, self.db, ryu_rest_client)
-        self.gre_ports.setup()
-        self.vif_ports.setup()
+        for p in self.polls:
+            p.setup()
         self.db.commit()
 
         self.int_br.set_controller(ofp_controller_addr)
 
     def daemon_loop(self):
         while True:
-            self.gre_ports.update()
-            self.vif_ports.update()
+            for p in self.polls:
+                p.update()
 
             self.db.commit()
             time.sleep(2)
@@ -527,18 +583,13 @@ def main():
         LOG.error("Unable to parse config file \"%s\": %s",
                   config_file, str(e))
 
-    integ_br = config.get("OVS", "integration-bridge")
-
     options = {"sql_connection": config.get("DATABASE", "sql_connection")}
     db = SqlSoup(options["sql_connection"])
     LOG.info("Connecting to database \"%s\" on %s",
              db.engine.url.database, db.engine.url.host)
-
-    tunnel_ip = _get_ip(config)
-    LOG.debug('tunnel_ip %s', tunnel_ip)
     root_helper = config.get("AGENT", "root_helper")
 
-    plugin = OVSQuantumOFPRyuAgent(integ_br, db, tunnel_ip, root_helper)
+    plugin = OVSQuantumOFPRyuAgent(db, root_helper, config)
     plugin.daemon_loop()
 
     sys.exit(0)
