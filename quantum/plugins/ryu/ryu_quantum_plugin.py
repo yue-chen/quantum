@@ -38,9 +38,20 @@ CONF_FILE = find_config_file({"plugin": "ryu"}, None, "ryu.ini")
 class OFPRyuDriver(ovs_quantum_plugin_base.OVSQuantumPluginDriverBase):
     # VLAN:16 bit, VXLAN/NVGRE: 24 bit, STT: 64 bit
     _TUNNEL_KEY_MAX_DEFAULT = 4095
+    GRE_TUNNEL = 'gre_tunnel'
+    SIMPLE_ISOLATION = 'simple_isolation'
+    SIMPLE_VLAN = 'simple_vlan'
+    _SUPPORTED_RYU_APPS = (
+        SIMPLE_ISOLATION,
+        SIMPLE_VLAN,
+        GRE_TUNNEL,
+        )
 
     def __init__(self, config):
         super(OFPRyuDriver, self).__init__()
+        self.ryu_app = config.get("OVS", "ryu_app")
+        if self.ryu_app not in self._SUPPORTED_RYU_APPS:
+            raise RuntimeError("Unsupported ryu app %s" % self.ryu_app)
         ofp_con_host = config.get("OVS", "openflow-controller")
         ofp_api_host = config.get("OVS", "openflow-rest-api")
         self.tunnel_key_max = self._TUNNEL_KEY_MAX_DEFAULT
@@ -55,9 +66,10 @@ class OFPRyuDriver(ovs_quantum_plugin_base.OVSQuantumPluginDriverBase):
         ryu_db.set_ofp_servers(hosts)
 
         self.client = client.OFPClient(ofp_api_host)
-        self.gt_client = client.GRETunnelClient(ofp_api_host)
+        self.tun_client = client.TunnelClient(ofp_api_host)
         self.client.update_network(rest_nw_id.NW_ID_EXTERNAL)
-        self.client.update_network(rest_nw_id.NW_ID_VPORT_GRE)
+        if self.ryu_app == self.GRE_TUNNEL:
+            self.client.update_network(rest_nw_id.NW_ID_VPORT_GRE)
 
         # register known all network list on startup
         self._create_all_tenant_network()
@@ -66,8 +78,7 @@ class OFPRyuDriver(ovs_quantum_plugin_base.OVSQuantumPluginDriverBase):
         for net in db.network_all_tenant_list():
             self.client.update_network(net.uuid)
         for tun in ryu_db.tunnel_key_all_list():
-            self.gt_client.update_tunnel_key(tun.network_id,
-                                             tun.tunnel_key)
+            self.tun_client.update_tunnel_key(tun.network_id, tun.tunnel_key)
         for port_binding in ryu_db.port_binding_all_list():
             network_id = port_binding.network_id
             dpid = port_binding.dpid
@@ -81,12 +92,12 @@ class OFPRyuDriver(ovs_quantum_plugin_base.OVSQuantumPluginDriverBase):
     def create_network(self, net):
         tunnel_key = ryu_db.tunnel_key_allocate(net.uuid, self.tunnel_key_max)
         self.client.create_network(net.uuid)
-        self.gt_client.create_tunnel_key(net.uuid, tunnel_key)
+        self.tun_client.create_tunnel_key(net.uuid, tunnel_key)
 
     def delete_network(self, net):
         ignore_http_not_found(lambda: self.client.delete_network(net.uuid))
         ignore_http_not_found(lambda:
-                              self.gt_client.delete_tunnel_key(net.uuid))
+                              self.tun_client.delete_tunnel_key(net.uuid))
 
         try:
             ryu_db.tunnel_key_delete(net.uuid)
@@ -115,7 +126,7 @@ class OFPRyuDriver(ovs_quantum_plugin_base.OVSQuantumPluginDriverBase):
             port_no = port_binding.port_no
             ryu_db.tunnel_port_request_del(net_id, datapath_id, port_no)
             ignore_http_not_found(
-                lambda: self.client.delete_port(net_id, datapath_id,port_no))
+                lambda: self.client.delete_port(net_id, datapath_id, port_no))
         except q_exc.PortNotFound:
             pass
 
