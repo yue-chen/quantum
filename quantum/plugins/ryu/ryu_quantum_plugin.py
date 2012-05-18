@@ -67,6 +67,7 @@ class OFPRyuDriver(ovs_quantum_plugin_base.OVSQuantumPluginDriverBase):
 
         self.client = client.OFPClient(ofp_api_host)
         self.tun_client = client.TunnelClient(ofp_api_host)
+        self.client.update_network(rest_nw_id.NW_ID_RESERVED)
         self.client.update_network(rest_nw_id.NW_ID_EXTERNAL)
         if self.ryu_app == self.GRE_TUNNEL:
             self.client.update_network(rest_nw_id.NW_ID_VPORT_GRE)
