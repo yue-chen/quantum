@@ -67,7 +67,7 @@ class PortBinding(BASE, QuantumBase):
                         nullable=False)
     port_id = Column(String(255), ForeignKey("ports.uuid"), unique=True,
                      nullable=False)
-    dpid = Column(String(255), ForeignKey("ovs_node.dpid"), nullable=False)
+    dpid = Column(String(255), nullable=False)
     port_no = Column(Integer, nullable=False)
     mac_address = Column(String(255), nullable=False)
 
@@ -105,7 +105,7 @@ class TunnelKey(BASE, QuantumBase):
     __tablename__ = 'tunnel_key'
 
     # Network.uuid
-    network_id = Column(String(255), primary_key=True, nullable=False)
+    network_id = Column(String(255), nullable=False)
     tunnel_key = Column(Integer, primary_key=True, nullable=False)
 
     def __init__(self, network_id, tunnel_key):
