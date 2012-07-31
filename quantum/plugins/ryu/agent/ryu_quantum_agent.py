@@ -415,6 +415,8 @@ class VifPortSet(object):
         return dict((port.interface_id, port) for port in self.db.ports.all())
 
     def setup(self):
+        # TODO:XXX register reserved ports
+
         for port in self.int_br.get_external_ports():
             LOG.debug('external port %s', port)
             self._port_update(self.nw_id_external, port)
