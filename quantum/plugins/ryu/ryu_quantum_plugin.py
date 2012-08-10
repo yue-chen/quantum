@@ -18,6 +18,8 @@
 
 import logging
 
+from sqlalchemy.orm import exc as sql_exc
+
 from ryu.app import client
 from ryu.app import rest_nw_id
 
@@ -50,6 +52,8 @@ class RyuQuantumPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         options.update({"reconnect_interval": reconnect_interval})
         db.configure_db(options)
 
+        db_api_v2.tunnel_key_init(cfg.CONF.OVS.tunnel_key_min,
+                                  cfg.CONF.OVS.tunnel_key_max)
         ofp_con_host = cfg.CONF.OVS.openflow_controller
         ofp_api_host = cfg.CONF.OVS.openflow_rest_api
 
@@ -61,7 +65,10 @@ class RyuQuantumPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         db_api_v2.set_ofp_servers(hosts)
 
         self.client = client.OFPClient(ofp_api_host)
-        self.client.update_network(rest_nw_id.NW_ID_EXTERNAL)
+        self.tun_client = client.TunnelClient(ofp_api_host)
+        for nw_id in rest_nw_id.RESERVED_NETWORK_IDS:
+            if nw_id != rest_nw_id.NW_ID_UNKNOWN:
+                self.client.update_network(nw_id)
         self._setup_rpc()
 
         # register known all network list on startup
@@ -75,18 +82,35 @@ class RyuQuantumPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         self.conn.consume_in_thread()
 
     def _create_all_tenant_network(self):
-        networks = db_api_v2.network_all_tenant_list()
-        for net in networks:
+        for net in db_api_v2.network_all_tenant_list():
             self.client.update_network(net.id)
+        for tun in db_api_v2.tunnel_key_all_list():
+            self.tun_client.update_tunnel_key(tun.network_id, tun.tunnel_key)
+
+    def _client_create_network(self, net_id, tunnel_key):
+        self.client.create_network(net_id)
+        self.tun_client.create_tunnel_key(net_id, tunnel_key)
+
+    def _client_delete_network(self, net_id):
+        client.ignore_http_not_found(lambda: self.client.delete_network(id))
+        client.ignore_http_not_found(
+            lambda: self.tun_client.delete_tunnel_key(id))
 
     def create_network(self, context, network):
         session = context.session
         with session.begin(subtransactions=True):
             net = super(RyuQuantumPluginV2, self).create_network(context,
                                                                  network)
-            self.client.create_network(net['id'])
             self._process_l3_create(context, network['network'], net['id'])
             self._extend_network_dict_l3(context, net)
+
+            tunnel_key = db_api_v2.tunnel_key_allocate(session, net['id'])
+            try:
+                self._client_create_network(net['id'], tunnel_key)
+            except:
+                self._client_delete_network(net['id'])
+                raise
+
         return net
 
     def update_network(self, context, id, network):
@@ -99,10 +123,12 @@ class RyuQuantumPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
         return net
 
     def delete_network(self, context, id):
+        self._client_delete_network(id)
         session = context.session
         with session.begin(subtransactions=True):
             super(RyuQuantumPluginV2, self).delete_network(context, id)
             self.client.delete_network(id)
+            db_api_v2.tunnel_key_delete(session, id)
 
     def get_network(self, context, id, fields=None):
         net = super(RyuQuantumPluginV2, self).get_network(context, id, None)
