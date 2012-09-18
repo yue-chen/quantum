@@ -17,14 +17,14 @@
 # @author: Isaku Yamahata
 
 import logging
-import os
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import exc as sql_exc
+from sqlalchemy.orm import exc as orm_exc
 
 from ryu.app import client
 from ryu.app import rest_nw_id
 from ryu.app.client import ignore_http_not_found
 
+from quantum.common import constants as q_const
 from quantum.common import exceptions as q_exc
 from quantum.common import topics
 from quantum.db import api as db
@@ -89,15 +89,21 @@ class RyuQuantumPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             self.client.update_network(net.id)
         for tun in db_api_v2.tunnel_key_all_list():
             self.tun_client.update_tunnel_key(tun.network_id, tun.tunnel_key)
-        for port_binding in db_api_v2.port_binding_all_list():
+        session = db.get_session()
+        for port_binding in db_api_v2.port_binding_all_list(session):
             network_id = port_binding.network_id
             dpid = port_binding.dpid
             port_no = port_binding.port_no
-            self.client.update_port(network_id, dpid, port_no)
-            self.client.update_mac(network_id, dpid, port_no,
-                                   port_binding.mac_address)
+            try:
+                port = session.query(models_v2.Port).filter(
+                    models_v2.Port.id == port_binding.port_id).one()
+            except orm_exc.NoResultFound:
+                continue
+            except orm_exc.MultipleResultsFound:
+                continue
 
-        db_api_v2.tunnel_port_request_initialize()
+            self.client.update_port(network_id, dpid, port_no)
+            self.client.update_mac(network_id, dpid, port_no, port.mac_address)
 
     def _client_create_network(self, net_id, tunnel_key):
         self.client.create_network(net_id)
@@ -161,10 +167,10 @@ class RyuQuantumPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
             port = self._get_port(context, id)
             net_id = port.network_id
             try:
-                port_binding = db_api_v2.port_binding_destroy(port.id, net_id)
+                port_binding = db_api_v2.port_binding_destroy(context.session,
+                                                              port.id, net_id)
                 datapath_id = port_binding.dpid
                 port_no = port_binding.port_no
-                db_api_v2.tunnel_port_request_del(net_id, datapath_id, port_no)
                 ignore_http_not_found(
                     lambda: self.client.delete_port(net_id, datapath_id,
                                                     port_no))
@@ -181,16 +187,39 @@ class RyuQuantumPluginV2(db_base_plugin_v2.QuantumDbPluginV2,
     def update_port(self, context, id, port):
         p = super(RyuQuantumPluginV2, self).update_port(context, id, port)
         net_id = p['network_id']
-        datapath_id = port['port']['datapath_id']
-        port_no = port['port']['port_no']
         mac_address = p['mac_address']
 
-        try:
-            db_api_v2.port_binding_create(id, net_id,
-                                          datapath_id, port_no, mac_address)
-        except IntegrityError:
+        deleted = port['port'].get('deleted', False)
+        if deleted:
+            session = context.session
+            try:
+                db_api_v2.port_binding_destroy(session, id, net_id)
+            except q_exc.PortNotFound:
+                pass
+            db_api_v2.set_port_status(session, id, q_const.PORT_STATUS_DOWN)
             return p
-        db_api_v2.tunnel_port_request_add(net_id, datapath_id, port_no)
-        self.client.create_port(net_id, datapath_id, port_no)
-        self.client.create_mac(net_id, datapath_id, port_no, mac_address)
-        return super(RyuQuantumPluginV2, self).update_port(context, id, port)
+
+        datapath_id = port['port'].get('datapath_id', None)
+        port_no = port['port'].get('port_no', None)
+        if datapath_id is None or port_no is None:
+            LOG.debug('p %s', p)
+            return p
+
+        try:
+            port_binding = db_api_v2.port_binding_get(id, net_id)
+        except orm_exc.NoResultFound:
+            try:
+                db_api_v2.port_binding_create(id, net_id, datapath_id, port_no)
+            except IntegrityError:
+                # TODO:XXX should do transaction?
+                return p
+            self.client.create_port(net_id, datapath_id, port_no)
+            self.client.create_mac(net_id, datapath_id, port_no, mac_address)
+        else:
+            if (port_binding.dpid != datapath_id or
+                    port_binding.port_no != port_no):
+                raise q_exc.InvalidInput('invalid datapath_id and port_no')
+            self.client.update_network(net_id)
+            self.client.update_port(net_id, datapath_id, port_no)
+            self.client.update_mac(net_id, datapath_id, port_no, mac_address)
+        return p
