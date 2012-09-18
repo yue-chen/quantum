@@ -21,29 +21,22 @@
 # @author: Isaku Yamahata
 
 import logging as LOG
-import netaddr
 import netifaces
 import socket
 import sys
 import time
-from sqlalchemy import or_
 from sqlalchemy.ext.sqlsoup import SqlSoup
-from sqlalchemy.orm import exc
 
 from ryu.app import client
+from ryu.app import conf_switch_key
 from ryu.app import rest_nw_id
 
 from quantum.agent.linux import ovs_lib
 from quantum.agent.linux.ovs_lib import VifPort
 from quantum.common import config as logging_config
-from quantum.common import constants
 from quantum.openstack.common import cfg
 from quantum.openstack.common.cfg import NoSuchOptError, NoSuchGroupError
 from quantum.plugins.ryu.common import config
-
-
-OP_STATUS_UP = "UP"
-OP_STATUS_DOWN = "DOWN"
 
 
 # This is stolen from nova/flags.py
@@ -63,10 +56,10 @@ def _get_my_ip():
     return addr
 
 
-def _get_ip(cfg):
+def _get_ip(cfg_ip_str, cfg_interface_str):
     ip = None
     try:
-        ip = cfg.CONF.OVS.tunnel_ip
+        ip = getattr(cfg.CONF.OVS, cfg_ip_str)
     except (NoSuchOptError, NoSuchGroupError):
         pass
     if ip:
@@ -74,7 +67,7 @@ def _get_ip(cfg):
 
     iface = None
     try:
-        iface = cfg.CONF.OVS.physical_interface
+        iface = getattr(cfg.CONF.OVS, cfg_interface_str)
     except (NoSuchOptError, NoSuchGroupError):
         pass
     if iface:
@@ -84,39 +77,12 @@ def _get_ip(cfg):
     return _get_my_ip()
 
 
-def _to_hex(ip_addr):
-    # assuming IPv4 address
-    return "%02x%02x%02x%02x" % tuple(ord(val) for val
-                                      in netaddr.IPAddress(ip_addr).packed)
+def _get_tunnel_ip():
+    return _get_ip('tunnel_ip', 'tunnel_interface')
 
 
-def _gre_port_name(local_ip, remote_ip):
-    # ovs requires requires less or equalt to 14 bytes length
-    # gre<remote>-<local lsb>
-    local_hex = _to_hex(local_ip)
-    remote_hex = _to_hex(remote_ip)
-    length = 14 - 4 - len(local_hex)    # 4 = 'gre' + '-'
-    assert length > 0
-    return "gre%s-%s" % (remote_hex, local_hex[-length:])
-
-
-class GREPort(object):
-    def __init__(self, port_name, ofport, local_ip, remote_ip):
-        super(GREPort, self).__init__()
-        self.port_name = port_name
-        self.ofport = ofport
-        self.local_ip = local_ip
-        self.remote_ip = remote_ip
-
-    def __eq__(self, other):
-        return (self.port_name == other.port_name and
-                self.ofport == other.ofport and
-                self.local_ip == other.local_ip and
-                self.remote_ip == other.remote_ip)
-
-    def __str__(self):
-        return "port_name=%s, ofport=%s, local_ip=%s, remote_ip=%s" % (
-            self.port_name, self.ofport, self.local_ip, self.remote_ip)
+def _get_ovsdb_ip():
+    return _get_ip('ovsdb_ip', 'ovsdb_interface')
 
 
 class OVSBridge(ovs_lib.OVSBridge):
@@ -127,29 +93,11 @@ class OVSBridge(ovs_lib.OVSBridge):
     def find_datapath_id(self):
         self.datapath_id = self.get_datapath_id()
 
-    def set_controller(self, target):
-        methods = ("ssl", "tcp", "unix", "pssl", "ptcp", "punix")
-        args = target.split(":")
-        if not args[0] in methods:
-            target = "tcp:" + target
-        self.run_vsctl(["set-controller", self.br_name, target])
-
-    def add_gre_port(self, name, local_ip, remote_ip, key=None):
-        options = "local_ip=%(local_ip)s,remote_ip=%(remote_ip)s" % locals()
-        if key:
-            options += ",key=%(key)s" % locals()
-
-        return self.run_vsctl(["add-port", self.br_name, name, "--",
-                               "set", "Interface", name, "type=gre",
-                               "options=%s" % options])
+    def set_manager(self, target):
+        self.run_vsctl(["set-manager", target])
 
     def get_ofport(self, name):
         return self.db_get_val("Interface", name, "ofport")
-
-    def _vifport(self, name, external_ids):
-        ofport = self.get_ofport(name)
-        return VifPort(name, ofport, external_ids["iface-id"],
-                       external_ids["attached-mac"], self)
 
     def _get_ports(self, get_port):
         ports = []
@@ -162,23 +110,6 @@ class OVSBridge(ovs_lib.OVSBridge):
                 ports.append(port)
 
         return ports
-
-    def _get_vif_port(self, name):
-        external_ids = self.db_get_map("Interface", name, "external_ids")
-        if "iface-id" in external_ids and "attached-mac" in external_ids:
-            return self._vifport(name, external_ids)
-        elif ("xs-vif-uuid" in external_ids and
-              "attached-mac" in external_ids):
-            # if this is a xenserver and iface-id is not automatically
-            # synced to OVS from XAPI, we grab it from XAPI directly
-            ofport = self.db_get_val("Interface", name, "ofport")
-            iface_id = self.get_xapi_iface_id(external_ids["xs-vif-uuid"])
-            return VifPort(name, ofport, iface_id,
-                           external_ids["attached-mac"], self)
-
-    def get_vif_ports(self):
-        "returns a VIF object for each VIF port"
-        return self._get_ports(self._get_vif_port)
 
     def _get_external_port(self, name):
         # exclude vif ports
@@ -197,22 +128,59 @@ class OVSBridge(ovs_lib.OVSBridge):
     def get_external_ports(self):
         return self._get_ports(self._get_external_port)
 
-    def _get_gre_port(self, name):
-        type_ = self.db_get_val("Interface", name, "type")
-        if type_ != "gre":
-            return
 
-        options = self.db_get_map("Interface", name, "options")
-        if "local_ip" in options and "remote_ip" in options:
-            ofport = self.get_ofport(name)
-            return GREPort(name, ofport, options["local_ip"],
-                           options["remote_ip"])
+class VifPortSet(object):
+    def __init__(self, int_br, ryu_rest_client):
+        super(VifPortSet, self).__init__()
+        self.int_br = int_br
+        self.api = ryu_rest_client
 
-    def get_gre_ports(self):
-        return self._get_ports(self._get_gre_port)
+    def setup(self):
+        for port in self.int_br.get_external_ports():
+            LOG.debug('external port %s', port)
+            self.api.update_port(rest_nw_id.NW_ID_EXTERNAL,
+                                 port.switch.datapath_id, port.ofport)
 
 
-def check_ofp_mode(db):
+
+class OVSQuantumOFPRyuAgent(object):
+    def __init__(self, integ_br, ofp_rest_api_addr,
+                 tunnel_ip, ovsdb_ip, ovsdb_port,
+                 root_helper):
+        super(OVSQuantumOFPRyuAgent, self).__init__()
+        self.int_br = None
+        self.vif_ports = None
+        self._setup_integration_br(root_helper, integ_br,
+                                   ofp_rest_api_addr,
+                                   tunnel_ip, ovsdb_port, ovsdb_ip)
+
+    def _setup_integration_br(self, root_helper, integ_br,
+                              ofp_rest_api_addr,
+                              tunnel_ip, ovsdb_port, ovsdb_ip):
+        self.int_br = OVSBridge(integ_br, root_helper)
+        self.int_br.find_datapath_id()
+
+        ryu_rest_client = client.OFPClient(ofp_rest_api_addr)
+
+        self.vif_ports = VifPortSet(self.int_br, ryu_rest_client)
+        self.vif_ports.setup()
+
+        sc_client = client.SwitchConfClient(ofp_rest_api_addr)
+        sc_client.set_key(self.int_br.datapath_id,
+                          conf_switch_key.OVS_TUNNEL_ADDR, tunnel_ip)
+
+        # Currently Ryu supports only tcp methods. (ssl isn't supported yet)
+        self.int_br.set_manager('ptcp:%d' % ovsdb_port)
+        sc_client.set_key(self.int_br.datapath_id, conf_switch_key.OVSDB_ADDR,
+                          'tcp:%s:%d' % (ovsdb_ip, ovsdb_port))
+
+    def daemon_loop(self):
+        while True:
+            # nothing
+            time.sleep(2)
+
+
+def check_ofp_rest_api_addr(db):
     LOG.debug("checking db")
 
     servers = db.ofp_server.all()
@@ -227,233 +195,14 @@ def check_ofp_mode(db):
         else:
             LOG.warn("ignoring unknown server type %s", serv)
 
-    LOG.debug("controller %s", ofp_controller_addr)
     LOG.debug("api %s", ofp_rest_api_addr)
-    if not ofp_controller_addr:
-        raise RuntimeError("OF controller isn't specified")
+    if ofp_controller_addr:
+        LOG.warn('OF controller parameter is stale %s', ofp_controller_addr)
     if not ofp_rest_api_addr:
         raise RuntimeError("Ryu rest API port isn't specified")
 
-    LOG.debug("going to ofp controller mode %s %s",
-              ofp_controller_addr, ofp_rest_api_addr)
-    return (ofp_controller_addr, ofp_rest_api_addr)
-
-
-def _ovs_node_update(db, dpid, tunnel_ip):
-    dpid_or_ip = or_(db.ovs_node.dpid == dpid,
-                     db.ovs_node.address == tunnel_ip)
-    try:
-        nodes = db.ovs_node.filter(dpid_or_ip).all()
-    except exc.NoResultFound:
-        pass
-    else:
-        for node in nodes:
-            LOG.debug("node %s", node)
-            if node.dpid == dpid and node.address == tunnel_ip:
-                pass
-            elif node.dpid == dpid:
-                LOG.warn("updating node %s %s -> %s", node.dpid, node.address,
-                         tunnel_ip)
-                node.address = tunnel_ip
-            else:
-                LOG.warn("deleting node %s", node)
-            db.delete(node)
-
-    db.ovs_node.insert(dpid=dpid, address=tunnel_ip)
-    db.commit()
-
-
-class GREPortSet(object):
-    def __init__(self, int_br, db, tunnel_ip, ryu_rest_client,
-                 gre_tunnel_client):
-        super(GREPortSet, self).__init__()
-        self.int_br = int_br
-        self.db = db
-        self.tunnel_ip = tunnel_ip
-        self.api = ryu_rest_client
-        self.tunnel_api = gre_tunnel_client
-
-    def setup(self):
-        _ovs_node_update(self.db, self.int_br.datapath_id, self.tunnel_ip)
-
-        self.api.update_network(rest_nw_id.NW_ID_VPORT_GRE)
-        for port in self.int_br.get_gre_ports():
-            try:
-                node = self.db.ovs_node.filter(
-                    self.db.ovs_node.address == port.remote_ip).one()
-            except exc.NoResultFound:
-                self._del_port(port.port_name, port.ofport)
-            else:
-                self.api.update_port(rest_nw_id.NW_ID_VPORT_GRE,
-                                     self.int_br.datapath_id, port.ofport)
-                self.tunnel_api.update_remote_dpid(self.int_br.datapath_id,
-                                                   port.ofport, node.dpid)
-
-        self.update()
-
-    def _add_port(self, node):
-        port_name = _gre_port_name(self.tunnel_ip, node.address)
-        self.int_br.add_gre_port(port_name, self.tunnel_ip, node.address,
-                                 'flow')
-        ofport = self.int_br.get_ofport(port_name)
-        self.api.create_port(rest_nw_id.NW_ID_VPORT_GRE,
-                             self.int_br.datapath_id, ofport)
-        self.tunnel_api.create_remote_dpid(self.int_br.datapath_id,
-                                           ofport, node.dpid)
-
-    def _del_port(self, port_name, ofport):
-        self.int_br.del_port(port_name)
-        client.ignore_http_not_found(
-            lambda: self.api.delete_port(rest_nw_id.NW_ID_VPORT_GRE,
-                                         self.int_br.datapath_id, ofport))
-        client.ignore_http_not_found(
-            lambda: self.tunnel_api.delete_port(self.int_br.datapath_id,
-                                                ofport))
-
-    def update(self):
-        gre_ports = dict((port.remote_ip, port)
-                         for port in self.int_br.get_gre_ports())
-
-        for node in self.db.ovs_node.all():
-            port = gre_ports.pop(node.address, None)
-            if port:
-                continue
-            if node.address == self.tunnel_ip:
-                continue
-            self._add_port(node)
-
-        for port in gre_ports.values():
-            self._del_port(port.port_name, port.ofport)
-
-
-class VifPortSet(object):
-    def __init__(self, int_br, db, ryu_rest_client):
-        super(VifPortSet, self).__init__()
-        self.nw_id_external = rest_nw_id.NW_ID_EXTERNAL
-        self.int_br = int_br
-        self.db = db
-        self.api = ryu_rest_client
-        self.old_vif_ports = None
-        self.old_local_bindings = None
-
-    def _port_update(self, network_id, port):
-        self.api.update_port(network_id, port.switch.datapath_id, port.ofport)
-        if port.vif_mac is not None:
-            # external port doesn't have mac address
-            self.api.update_network(network_id)
-            self.api.update_mac(network_id, port.switch.datapath_id,
-                                port.ofport, port.vif_mac)
-        else:
-            assert network_id == self.nw_id_external
-
-    def _all_bindings(self):
-        """return interface id -> port witch include network id bindings"""
-        return dict((port.device_id, port) for port in self.db.ports.all())
-
-    def _set_port_status(self, port, status):
-        port.status = status
-
-    def setup(self):
-        for port in self.int_br.get_external_ports():
-            LOG.debug('external port %s', port)
-            self._port_update(self.nw_id_external, port)
-
-        all_bindings = self._all_bindings()
-        vif_ports = {}
-        local_bindings = {}
-        for port in self.int_br.get_vif_ports():
-            vif_ports[port.vif_id] = port
-            if port.vif_id in all_bindings:
-                net_id = all_bindings[port.vif_id].network_id
-                local_bindings[port.vif_id] = net_id
-                self._port_update(net_id, port)
-                self._set_port_status(all_bindings[port.vif_id],
-                                      constants.PORT_STATUS_ACTIVE)
-                LOG.info("Updating binding to net-id = %s for %s",
-                         net_id, str(port))
-
-        self.old_vif_ports = vif_ports
-        self.old_local_bindings = local_bindings
-
-    def _update(self, old_vif_ports, old_local_bindings):
-        all_bindings = self._all_bindings()
-
-        new_vif_ports = {}
-        new_local_bindings = {}
-        for port in self.int_br.get_vif_ports():
-            new_vif_ports[port.vif_id] = port
-            if port.vif_id in all_bindings:
-                net_id = all_bindings[port.vif_id].network_id
-                new_local_bindings[port.vif_id] = net_id
-
-            old_b = old_local_bindings.get(port.vif_id)
-            new_b = new_local_bindings.get(port.vif_id)
-            if old_b == new_b:
-                continue
-
-            if old_b:
-                LOG.info("Removing binding to net-id = %s for %s",
-                         old_b, str(port))
-                if port.vif_id in all_bindings:
-                    self._set_port_status(all_bindings[port.vif_id],
-                                          OP_STATUS_DOWN)
-            if new_b:
-                if port.vif_id in all_bindings:
-                    self._set_port_status(all_bindings[port.vif_id],
-                                          OP_STATUS_UP)
-                LOG.info("Adding binding to net-id = %s for %s",
-                         new_b, str(port))
-
-        for vif_id in old_vif_ports:
-            if vif_id not in new_vif_ports:
-                LOG.info("Port Disappeared: %s", vif_id)
-                if vif_id in all_bindings:
-                    self._set_port_status(all_bindings[vif_id],
-                                          OP_STATUS_DOWN)
-
-        return (new_vif_ports, new_local_bindings)
-
-    def update(self):
-        (self.old_vif_ports,
-         self.old_local_bindings) = self._update(self.old_vif_ports,
-                                                 self.old_local_bindings)
-
-
-class OVSQuantumOFPRyuAgent(object):
-    def __init__(self, integ_br, db, tunnel_ip, root_helper):
-        super(OVSQuantumOFPRyuAgent, self).__init__()
-        self.db = db
-        self.int_br = None
-        self.gre_ports = None
-        self.vif_ports = None
-        (ofp_controller_addr, ofp_rest_api_addr) = check_ofp_mode(self.db)
-        self._setup_integration_br(root_helper, integ_br, tunnel_ip,
-                                   ofp_controller_addr, ofp_rest_api_addr)
-
-    def _setup_integration_br(self, root_helper, integ_br, tunnel_ip,
-                              ofp_controller_addr, ofp_rest_api_addr):
-        self.int_br = OVSBridge(integ_br, root_helper)
-        self.int_br.find_datapath_id()
-
-        ryu_rest_client = client.OFPClient(ofp_rest_api_addr)
-        gt_client = client.GRETunnelClient(ofp_rest_api_addr)
-
-        self.gre_ports = GREPortSet(self.int_br, self.db, tunnel_ip,
-                                    ryu_rest_client, gt_client)
-        self.vif_ports = VifPortSet(self.int_br, self.db, ryu_rest_client)
-        self.gre_ports.setup()
-        self.vif_ports.setup()
-        self.db.commit()
-
-        self.int_br.set_controller(ofp_controller_addr)
-
-    def daemon_loop(self):
-        while True:
-            self.gre_ports.update()
-            self.vif_ports.update()
-
-            self.db.commit()
-            time.sleep(2)
+    LOG.debug("going to ofp controller mode %s", ofp_rest_api_addr)
+    return ofp_rest_api_addr
 
 
 def main():
@@ -469,11 +218,17 @@ def main():
 
     LOG.info("Connecting to database \"%s\" on %s",
              db.engine.url.database, db.engine.url.host)
+    ofp_rest_api_addr = check_ofp_rest_api_addr(db)
 
-    tunnel_ip = _get_ip(cfg)
+    tunnel_ip = _get_tunnel_ip()
     LOG.debug('tunnel_ip %s', tunnel_ip)
-
-    plugin = OVSQuantumOFPRyuAgent(integ_br, db, tunnel_ip, root_helper)
+    ovsdb_port = cfg.CONF.OVS.ovsdb_port
+    LOG.debug('ovsdb_port %s', ovsdb_port)
+    ovsdb_ip = _get_ovsdb_ip()
+    LOG.debug('ovsdb_ip %s', ovsdb_ip)
+    plugin = OVSQuantumOFPRyuAgent(integ_br, ofp_rest_api_addr,
+                                   tunnel_ip, ovsdb_ip, ovsdb_port,
+                                   root_helper)
     plugin.daemon_loop()
 
     sys.exit(0)
