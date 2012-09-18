@@ -18,7 +18,6 @@ import logging
 
 from sqlalchemy import exc as sa_exc
 from sqlalchemy import func
-from sqlalchemy import or_
 from sqlalchemy.orm import exc as orm_exc
 
 from quantum.common import exceptions as q_exc
@@ -196,47 +195,14 @@ def tunnel_key_all_list():
     return session.query(ryu_models_v2.TunnelKey).all()
 
 
-def ovs_node_update(dpid, tunnel_ip):
-    session = db.get_session()
-    dpid_or_ip = or_(models_v2.OVSNode.dpid == dpid,
-                     models_v2.OVSNode.address == tunnel_ip)
-    update = True
-    try:
-        nodes = session.query(models_v2.OVSNode).filter(dpid_or_ip).all()
-    except orm_exc.NoResultFound:
-        pass
-    else:
-        for node in nodes:
-            if node.dpid == dpid and node.address == tunnel_ip:
-                update = False
-                continue
-            if node.dpid == dpid:
-                LOG.warn("updating node %s %s -> %s",
-                         node.dpid, node.address, tunnel_ip)
-            else:
-                LOG.warn("deleting node %s", node)
-            session.delete(node)
-
-    if update:
-        node = models_v2.OVSNode(dpid, tunnel_ip)
-        session.add(node)
-
-    session.flush()
-
-
-def ovs_node_all_list():
-    session = db.get_session()
-    return session.query(models_v2.OVSNode).all()
-
-
-def port_binding_create(port_id, net_id, dpid, port_no, mac_address):
+def port_binding_create(port_id, net_id, dpid, port_no):
     session = db.get_session()
     session.query(models_v2.Port).filter(
         models_v2.Port.network_id == net_id).filter(
             models_v2.Port.id == port_id)  # confirm port exists
     with session.begin():
-        port_binding = models_v2.PortBinding(net_id, port_id,
-                                             dpid, port_no, mac_address)
+        port_binding = ryu_models_v2.PortBinding(net_id, port_id,
+                                                 dpid, port_no)
         session.add(port_binding)
         session.flush()
         return port_binding
@@ -247,17 +213,16 @@ def port_binding_get(port_id, net_id):
     session.query(models_v2.Port).filter(
         models_v2.Port.network_id == net_id).filter(
             models_v2.Port.id == port_id)  # confirm port exists
-    return session.query(models_v2.PortBinding).filter_by(
+    return session.query(ryu_models_v2.PortBinding).filter_by(
         network_id=net_id).filter_by(port_id=port_id).one()
 
 
-def port_binding_destroy(port_id, net_id):
+def port_binding_destroy(session, port_id, net_id):
     try:
-        session = db.get_session()
         session.query(models_v2.Port).filter(
             models_v2.Port.network_id == net_id).filter(
                 models_v2.Port.id == port_id)  # confirm port exists
-        port_binding = session.query(models_v2.PortBinding).filter_by(
+        port_binding = session.query(ryu_models_v2.PortBinding).filter_by(
             network_id=net_id).filter_by(port_id=port_id).one()
         session.delete(port_binding)
         session.flush()
@@ -266,126 +231,15 @@ def port_binding_destroy(port_id, net_id):
         raise q_exc.PortNotFound(port_id=port_id, net_id=net_id)
 
 
-def port_binding_all_list():
-    session = db.get_session()
-    return session.query(models_v2.PortBinding).all()
+def port_binding_all_list(session):
+    return session.query(ryu_models_v2.PortBinding).all()
 
 
-_SEQUENCE_MIN = 0
-
-
-def _sequence_init(session, table):
+def set_port_status(session, port_id, status):
     try:
-        return session.query(table).one()
-    except orm_exc.MultipleResultsFound:
-        max_sequence = session.query(func.max(table.sequence))
-        session.query(table).delete()
-        sequence = table(max_sequence)
+        port = session.query(models_v2.Port).filter_by(id=port_id).one()
+        port['status'] = status
+        session.merge(port)
+        session.flush()
     except orm_exc.NoResultFound:
-        sequence = table(_SEQUENCE_MIN)
-        LOG.debug('init')
-
-    session.add(sequence)
-    session.flush()
-    return session.query(table).one()
-
-
-def _sequence_update(session, table):
-    session.query(table).update({table.sequence: table.sequence + 1})
-
-
-def tunnel_port_request_initialize():
-    session = db.get_session()
-    session.query(models_v2.TunnelPortRequestSequence).all()
-    session.execute(
-        # NOTE: mysql doesn't support table aliasing for 'DELETE FROM'.
-        'DELETE FROM tunnel_port_request WHERE '
-        'NOT EXISTS (SELECT 1 FROM port_binding p1, port_binding p2 WHERE '
-        '            p1.dpid <> p2.dpid AND '
-        '            p1.network_id = p2.network_id AND '
-        '            ((tunnel_port_request.src_dpid = p1.dpid AND '
-        '              tunnel_port_request.dst_dpid = p2.dpid) OR '
-        '             (tunnel_port_request.src_dpid = p2.dpid AND '
-        '              tunnel_port_request.dst_dpid = p1.dpid)))'
-    )
-    session.execute(
-        'INSERT INTO tunnel_port_request(src_dpid, dst_dpid) '
-        'SELECT DISTINCT p1.dpid, p2.dpid '
-        'FROM port_binding p1, port_binding p2 WHERE '
-        'p1.dpid <> p2.dpid AND '
-        'p1.network_id = p2.network_id AND '
-        'NOT EXISTS (SELECT 1 FROM tunnel_port_request t WHERE '
-        '           (t.src_dpid = p1.dpid AND t.dst_dpid = p2.dpid))'
-    )
-    _sequence_init(session, models_v2.TunnelPortRequestSequence)
-    _sequence_update(session, models_v2.TunnelPortRequestSequence)
-    session.flush()
-
-
-def tunnel_port_request_add(network_id, dpid, port_no):
-    LOG.debug('add network_id %s dpid %s port_no %s',
-              network_id, dpid, port_no)
-    session = db.get_session()
-    session.execute(
-        'INSERT INTO tunnel_port_request(src_dpid, dst_dpid) '
-        'SELECT DISTINCT p1.dpid, p2.dpid '
-        'FROM port_binding p1, port_binding p2 WHERE '
-
-        # first instance of network_id on dpid?
-        'NOT EXISTS (SELECT 1 from port_binding pi WHERE '
-        '            pi.network_id = :network_id AND '
-        '            pi.dpid = :dpid AND '
-        '            pi.port_no <> :port_no) AND '
-
-        # the two distinct dpids share network_id?
-        '(p1.dpid <> p2.dpid AND '
-        ' (p1.dpid = :dpid OR p2.dpid = :dpid) AND '
-        ' p1.network_id = p2.network_id) AND '
-
-        # tunnel_port_request already has it?
-        'NOT EXISTS (SELECT 1 FROM tunnel_port_request t WHERE '
-        '           ((t.src_dpid = p1.dpid AND t.dst_dpid = p2.dpid) OR '
-        '            (t.src_dpid = p2.dpid AND t.dst_dpid = p1.dpid)))',
-        {'network_id': network_id, 'dpid': dpid, 'port_no': port_no})
-    _sequence_update(session, models_v2.TunnelPortRequestSequence)
-    session.flush()
-
-
-def tunnel_port_request_del(network_id, dpid, port_no):
-    LOG.debug('del network_id %s dpid %s port_no %s',
-              network_id, dpid, port_no)
-    session = db.get_session()
-    session.execute(
-        # NOTE: mysql doesn't support table aliasing for 'DELETE FROM'.
-        'DELETE FROM tunnel_port_request WHERE '
-
-        # last instance of the network on dpid?
-        'NOT EXISTS (SELECT 1 FROM port_binding p WHERE '
-        '            p.network_id = :network_id AND '
-        '            p.dpid = :dpid AND '
-        '            p.port_no <> :port_no) '
-        'AND '
-
-        # the two port_binding doesn't share same network_id?
-        '('
-        ' (tunnel_port_request.dst_dpid = :dpid AND '
-        '  NOT EXISTS (SELECT 1 FROM port_binding p1, port_binding p2 WHERE '
-        '              p1.dpid = :dpid AND '
-        '              p1.network_id <> :network_id AND '
-        '              p1.port_no <> :port_no AND '
-        '              p2.dpid = tunnel_port_request.src_dpid AND '
-        '              p2.network_id <> :network_id AND '
-        '              p1.network_id = p2.network_id))'
-        ' OR'
-        ' (tunnel_port_request.src_dpid = :dpid AND'
-        '  NOT EXISTS (SELECT 1 FROM port_binding p1, port_binding p2 WHERE '
-        '              p1.dpid = :dpid AND '
-        '              p1.network_id <> :network_id AND '
-        '              p1.port_no <> :port_no AND '
-        '              p2.dpid = tunnel_port_request.dst_dpid AND '
-        '              p2.network_id <> :network_id AND '
-        '              p1.network_id = p2.network_id))'
-        ')',
-        {'network_id': network_id, 'dpid': dpid, 'port_no': port_no})
-    _sequence_update(session, models_v2.TunnelPortRequestSequence)
-    session.flush()
+        raise q_exc.PortNotFound(port_id=port_id, net_id=None)
