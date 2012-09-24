@@ -146,6 +146,13 @@ class OVSInterfaceDriver(LinuxInterfaceDriver):
             namespace_obj = ip.ensure_namespace(namespace)
             namespace_obj.add_device_to_namespace(device)
         device.link.set_up()
+        try:
+            # iproute2-ss120521 or later is required
+            device.link.set_state_up()
+        except RuntimeError:
+            LOG.error(_("'ip set %s state UP' isn't supported. "
+                        "iproute2-ss120521 or later is required") %
+                      device_name)
 
     def unplug(self, device_name, bridge=None, namespace=None, prefix=None):
         """Unplug the interface."""

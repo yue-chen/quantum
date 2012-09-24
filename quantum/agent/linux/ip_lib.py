@@ -187,6 +187,9 @@ class IpLinkCommand(IpDeviceCommandBase):
         self._as_root('set', self.name, 'name', name)
         self._parent.name = name
 
+    def set_state_up(self, state):
+        self._as_root('set', self.name, 'state', 'UP')
+
     def delete(self):
         self._as_root('delete', self.name)
 
